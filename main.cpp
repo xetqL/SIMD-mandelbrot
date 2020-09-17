@@ -56,6 +56,21 @@ void mandelbrot_aos(std::vector<float>& arr, size_t X, size_t Y, Kernel kernel){
         arr[xy]        = (float) kernel(ax, ay); 
     }
 }
+inline void soa_kernel(size_t xy, 
+                       std::vector<float>& arr,
+                       std::vector<float>& xs, 
+                       std::vector<float>& ys,
+                       const std::vector<float>& axs,
+                       const std::vector<float>& ays){
+    const float newx = xs[xy] * xs[xy] - ys[xy] *ys[xy] + axs[xy];
+    const float newy = 2.f * xs[xy]*ys[xy] + ays[xy];
+    const int   mask = 1 - ((int) (4.f < newx*newx + newy*newy));
+    arr[xy] += BITSELECT(mask, 1.f, 0.f);
+    xs[xy]  = BITSELECT(mask, newx, xs[xy]);
+    ys[xy]  = BITSELECT(mask, newy, ys[xy]);
+}
+
+
 void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){ 
     const size_t XY = X*Y;
     std::vector<float> xs(XY, 0.f), ys(XY, 0.f), axs(XY, 0.f), ays(XY, 0.f);
@@ -66,17 +81,11 @@ void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){
 
     for(size_t i = 0; i < NUM_IT; ++i) {
         for(size_t xy = 0; xy < XY; ++xy) {
-          const float newx = xs[xy] * xs[xy] - ys[xy] *ys[xy] + axs[xy];
-          const float newy = 2.f * xs[xy]*ys[xy] + ays[xy];
-          const int   mask = 1 - ((int) (4.f < newx*newx + newy*newy));
-          arr[xy] += BITSELECT(mask, 1.f, 0.f);
-           xs[xy]  = BITSELECT(mask, newx, xs[xy]);
-           ys[xy]  = BITSELECT(mask, newy, ys[xy]);
+            soa_kernel(xy, arr,xs,ys,axs,ays);
         }
     }
-
-
 }
+
 Mat toMat(const std::vector<float>& arr, size_t X, size_t Y){
     Mat img(X,Y, CV_32F);
 
