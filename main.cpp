@@ -6,11 +6,16 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <valarray>
-#include <execution>
+#include <x86intrin.h>    //AVX/SSE Extensions
+
+#include <iterator>
 using namespace cv;
 using namespace std;
 
-const int NUM_IT = 500;
+const int NUM_IT = 300;
+const int S      = 4096;
+constexpr int XY = S*S;
+constexpr int N  = XY/8;
 
 inline int BITSELECT(int condition, int truereturnvalue, int falsereturnvalue){
     return (truereturnvalue & -condition) | (falsereturnvalue & ~(-condition)); 
@@ -51,11 +56,61 @@ template<class Kernel>
 void mandelbrot_aos(std::vector<float>& arr, size_t X, size_t Y, Kernel kernel){
     const size_t XY = X*Y;
     for(size_t xy = 0; xy < XY; ++xy) {
-        const float ax = (float) (xy % X) / (float) X;
-        const float ay = (float) (xy / X) / (float) Y;
+        const float ax = ((float) (xy % X) / (float) X) / 200.f - 0.7463f;
+        const float ay = ((float) (xy / X) / (float) Y) / 200.f + 0.1102f;
+        //cout << ax << " " << ay << endl;
         arr[xy]        = (float) kernel(ax, ay); 
     }
 }
+inline __m256 kernel(__m256 ax, __m256 ay)  {
+    __m256 mone = _mm256_set1_ps(-1.0f);
+    __m256 one  = _mm256_set1_ps(1.0f);
+    __m256 two  = _mm256_set1_ps(2.0f);
+    __m256 four = _mm256_set1_ps(4.0f);
+    __m256 res  = _mm256_set1_ps(0.0f);
+    __m256 x    = _mm256_set1_ps(0.0f);
+    __m256 y    = _mm256_set1_ps(0.0f);
+
+    for (int n = 0; n < NUM_IT; n++) {
+        __m256 newx = _mm256_add_ps(_mm256_sub_ps(_mm256_mul_ps(x, x), _mm256_mul_ps(y, y)), ax);
+        __m256 newy = _mm256_add_ps(_mm256_mul_ps(two, _mm256_mul_ps(x, y)), ay);
+        __m256 norm = _mm256_add_ps(_mm256_mul_ps(newx, newx), _mm256_mul_ps(newy, newy));
+        __m256 cmpmask = _mm256_cmp_ps(four, norm, _CMP_LT_OS);
+        res = _mm256_blendv_ps(_mm256_add_ps(res, one), res, cmpmask);
+
+        x = _mm256_blendv_ps(newx, x, cmpmask);
+        y = _mm256_blendv_ps(newy, y, cmpmask);
+
+        if(_mm256_testc_ps(cmpmask, mone) ){
+            break;
+        }
+
+    }
+    return res;
+}
+
+float* vals = (float*) aligned_alloc(32, 8);
+void mandelbrot_aos_intr(std::vector<float>& arr, size_t X, size_t Y){
+    const size_t XY = X*Y;
+    __m256 ax = _mm256_set1_ps(-0.7463f);
+    __m256 ay = _mm256_set1_ps( 0.1102f);
+    for(size_t xy = 0; xy < XY; xy +=8) {
+        for(int i = 0; i < 8; ++i) {
+            ax[i] += ((float) ((xy+i) % X) / (float) X) / 200.f;
+            ay[i] += ((float) ((xy+i) / X) / (float) Y) / 200.f;
+        }
+
+        __m256 res = kernel(ax, ay);
+        _mm256_store_ps(vals,  res);
+
+        std::copy(vals, vals+8, arr.begin() + xy); 
+
+        ax = _mm256_set1_ps(-0.7463f);
+        ay = _mm256_set1_ps( 0.1102f);
+    }
+
+}
+
 void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){ 
     const size_t XY = X*Y;
     std::vector<float> xs(XY, 0.f), ys(XY, 0.f), axs(XY, 0.f), ays(XY, 0.f);
@@ -65,6 +120,7 @@ void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){
     }
 
     for(size_t i = 0; i < NUM_IT; ++i) {
+        #pragma GCC ivdep
         for(size_t xy = 0; xy < XY; ++xy) {
           const float newx = xs[xy] * xs[xy] - ys[xy] *ys[xy] + axs[xy];
           const float newy = 2.f * xs[xy]*ys[xy] + ays[xy];
@@ -74,8 +130,6 @@ void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){
            ys[xy]  = BITSELECT(mask, newy, ys[xy]);
         }
     }
-
-
 }
 Mat toMat(const std::vector<float>& arr, size_t X, size_t Y){
     Mat img(X,Y, CV_32F);
@@ -86,33 +140,50 @@ Mat toMat(const std::vector<float>& arr, size_t X, size_t Y){
 
     return img;
 }
+
+void print(Mat mat, size_t X, size_t Y){
+    for(int i=0; i<X; ++i) {
+        for (int j = 0; j < Y; ++j) {
+            cout << mat.at<float>(i, j) << " ";
+        }
+        cout << endl;
+    }
+}
 #include <chrono>
 using namespace chrono;
 auto t1 = high_resolution_clock::now();
 auto t2 = high_resolution_clock::now();
+
 int main(int argc, char** argv){
-   const int S = 1000;
-   constexpr int XY = S*S;
+
    std::vector<float> arr1(XY), arr2(XY), arr3(XY);  
+   
    t1 = high_resolution_clock::now(); 
-   mandelbrot_aos(arr1, S, S, [] (float ax, float ay) { return kernel2(ax, ay);  } );
+   mandelbrot_aos_intr(arr1, S, S);
    t2 = high_resolution_clock::now();
-   auto t_aos = duration_cast<duration<double>>(t2 - t1).count();
+   auto t_intr = duration_cast<duration<double>>(t2 - t1).count();
 
    t1 = high_resolution_clock::now();
-   mandelbrot_soa(arr2, S, S);
+   mandelbrot_aos(arr2, S, S, [] (float ax, float ay) {return kernel1(ax,ay);});
+   t2 = high_resolution_clock::now();
+   auto t_naiv = duration_cast<duration<double>>(t2 - t1).count();
+   
+   t1 = high_resolution_clock::now();
+   mandelbrot_soa(arr3, S, S);
    t2 = high_resolution_clock::now();
    auto t_soa = duration_cast<duration<double>>(t2 - t1).count();
    
-
-   cout << "Time for AoS: " << t_aos << endl;
-   cout << "Time for SoA: " << t_soa << endl;
-   cout << "Improvement : " << (t_aos / t_soa) << " X" << endl;
+   cout << "Time intrinsic: " << t_intr << endl;
+   cout << "Time naive    : " << t_naiv << endl;
+   cout << "Time soa autov: " << t_soa << endl;
+   cout << "Improvement   : " << (t_naiv / t_intr) << " X" << endl;
    
-   Mat img = toMat(arr2, S, S);  
+   Mat img = toMat(arr1, S, S);
 
-   img /= NUM_IT;    
+   img /= NUM_IT;
+
    resize(img, img, Size(1024, 768));
    imshow("Mandelbrot", img); 
    waitKey(0);
+   return 0;
 }
