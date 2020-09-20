@@ -1,20 +1,21 @@
 #include <iostream>
 #include <vector>
-
+#include <cmath>
 #include <x86intrin.h>    //AVX/SSE Extensions
+
+#include "VCL/vectorclass.h"
 
 using namespace std;
 
-const int NUM_IT = 300;
-const int S      = 4096;
+const int NUM_IT = 500;
+const int S      = 1024;
 constexpr int XY = S*S;
 constexpr int N  = XY/8;
 
 inline int BITSELECT(int condition, int truereturnvalue, int falsereturnvalue){
     return (truereturnvalue & -condition) | (falsereturnvalue & ~(-condition)); 
 }
-inline float BITSELECT(int condition, float truereturnvalue, float falsereturnvalue)
-{
+inline float BITSELECT(int condition, float truereturnvalue, float falsereturnvalue) {
     int& at = reinterpret_cast<int&>(truereturnvalue);
     int& af = reinterpret_cast<int&>(falsereturnvalue);
     int res = (at & -condition) | (af & ~(-condition)); //a when TRUE and b when FALSE
@@ -75,7 +76,7 @@ inline __m256 kernel(__m256 ax, __m256 ay)  {
         y = _mm256_blendv_ps(newy, y, cmpmask);
 
         if(_mm256_testc_ps(cmpmask, mone) ){
-            break;
+            return res;
         }
 
     }
@@ -89,17 +90,13 @@ void mandelbrot_aos_intr(std::vector<float>& arr, size_t X, size_t Y){
     __m256 ay = _mm256_set1_ps( 0.1102f);
     for(size_t xy = 0; xy < XY; xy +=8) {
         for(int i = 0; i < 8; ++i) {
-            ax[i] += ((float) ((xy+i) % X) / (float) X) / 200.f;
-            ay[i] += ((float) ((xy+i) / X) / (float) Y) / 200.f;
+            ax[i] = ((float) ((xy+i) % X) / (float) X) / 200.f -0.7463f;
+            ay[i] = ((float) ((xy+i) / X) / (float) Y) / 200.f +0.1102f ;
         }
-
         __m256 res = kernel(ax, ay);
         _mm256_store_ps(vals,  res);
 
-        std::copy(vals, vals+8, arr.begin() + xy); 
-
-        ax = _mm256_set1_ps(-0.7463f);
-        ay = _mm256_set1_ps( 0.1102f);
+        std::copy(vals, vals+8, arr.begin() + xy);
     }
 
 }
@@ -125,6 +122,33 @@ void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){
     }
 }
 
+Vec8f kernel_vcl(Vec8f ax, Vec8f ay){
+    Vec8f x = 0.f, y = 0.f, count = 0.f;
+    for(int n = 0; n < NUM_IT ; ++n){
+        Vec8f newx = x*x - y*y + ax;
+        Vec8f newy = 2.f * x*y + ay;
+        Vec8fb mask= 4.f < newx*newx + newy*newy;
+        count = select(mask, count, count + 1);
+        x     = select(mask,     x,         newx);
+        y     = select(mask,     y,         newy);
+        if ( horizontal_and(mask) ) {
+            return count;
+        }
+    }
+    return count;
+}
+void mandelbrot_VCL(std::vector<float>& arr, size_t X, size_t Y){
+    Vec8f ax8, ay8;
+    for(int xy = 0; xy < XY; xy += 8) {
+        for(int i = 0; i < 8; ++i) {
+            ax8.insert(i, ((float) ((xy+i) % X) / (float) X ) / 200.f - 0.7463f);
+            ay8.insert(i, ((float) ((xy+i) / X) / (float) Y ) / 200.f + 0.1102);
+        }
+        Vec8f count = kernel_vcl(ax8, ay8);
+        count.store(arr.data() + xy);
+    }
+}
+
 #include <chrono>
 using namespace chrono;
 auto t1 = high_resolution_clock::now();
@@ -132,27 +156,45 @@ auto t2 = high_resolution_clock::now();
 
 int main(int argc, char** argv){
 
-   std::vector<float> arr1(XY), arr2(XY), arr3(XY);  
-   
-   t1 = high_resolution_clock::now(); 
-   mandelbrot_aos_intr(arr1, S, S);
-   t2 = high_resolution_clock::now();
-   auto t_intr = duration_cast<duration<double>>(t2 - t1).count();
+    std::vector<float> arr1(XY), arr2(XY), arr3(XY), arr4(XY);
 
-   t1 = high_resolution_clock::now();
-   mandelbrot_aos(arr2, S, S, [] (float ax, float ay) {return kernel1(ax,ay);});
-   t2 = high_resolution_clock::now();
-   auto t_naiv = duration_cast<duration<double>>(t2 - t1).count();
-   
-   t1 = high_resolution_clock::now();
-   mandelbrot_soa(arr3, S, S);
-   t2 = high_resolution_clock::now();
-   auto t_soa = duration_cast<duration<double>>(t2 - t1).count();
-   
-   cout << "Time intrinsic: " << t_intr << endl;
-   cout << "Time naive    : " << t_naiv << endl;
-   cout << "Time soa autov: " << t_soa << endl;
-   cout << "Improvement   : " << (t_naiv / t_intr) << " X" << endl;
+    t1 = high_resolution_clock::now();
+    mandelbrot_aos_intr(arr1, S, S);
+    t2 = high_resolution_clock::now();
+    auto t_intr = duration_cast<duration<double>>(t2 - t1).count();
 
-   return 0;
+    t1 = high_resolution_clock::now();
+    mandelbrot_aos(arr2, S, S, [] (float ax, float ay) {return kernel1(ax,ay);});
+    t2 = high_resolution_clock::now();
+    auto t_naiv = duration_cast<duration<double>>(t2 - t1).count();
+
+    t1 = high_resolution_clock::now();
+    mandelbrot_soa(arr3, S, S);
+    t2 = high_resolution_clock::now();
+    auto t_soa = duration_cast<duration<double>>(t2 - t1).count();
+
+    t1 = high_resolution_clock::now();
+    mandelbrot_VCL(arr4, S, S);
+    t2 = high_resolution_clock::now();
+    auto t_vcl = duration_cast<duration<double>>(t2 - t1).count();
+
+    cout << "(1) Time intrinsic: " << t_intr << endl;
+    cout << "(2) Time naive    : " << t_naiv << endl;
+    cout << "(3) Time autovec  : " << t_soa << endl;
+    cout << "(4) Time VCL      : " << t_vcl << endl;
+    cout << "Improvement(1): " << (t_naiv / t_intr) << " X" << endl;
+    cout << "Improvement(2): " << (t_naiv / t_vcl) << " X" << endl;
+
+    bool correct = true;
+    double MSE = 0.0;
+    for(int i = 0; i < S; ++i){
+        for(int j = 0; j < S; ++j){
+            MSE += std::pow((arr2[i+S*j] - arr1[i+S*j])/NUM_IT, 2);
+            MSE += std::pow((arr3[i+S*j] - arr1[i+S*j])/NUM_IT, 2);
+            MSE += std::pow((arr4[i+S*j] - arr1[i+S*j])/NUM_IT, 2);
+        }
+    }
+
+    cout << "MSE "<< (MSE / (3*XY)) <<endl;
+    return 0;
 }

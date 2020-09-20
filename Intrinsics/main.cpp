@@ -36,7 +36,7 @@ inline __m256 kernel(__m256 ax, __m256 ay)  {
         y = _mm256_blendv_ps(newy, y, cmpmask);
 
         if(_mm256_testc_ps(cmpmask, mone) ){
-            break;
+            return res;
         }
 
     }
