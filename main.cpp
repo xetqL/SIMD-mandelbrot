@@ -1,15 +1,8 @@
 #include <iostream>
-#include <opencv2/highgui/highgui.hpp>
-#include <random>
-#include <iostream>
 #include <vector>
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc/imgproc.hpp>
-#include <valarray>
+
 #include <x86intrin.h>    //AVX/SSE Extensions
 
-#include <iterator>
-using namespace cv;
 using namespace std;
 
 const int NUM_IT = 300;
@@ -58,10 +51,10 @@ void mandelbrot_aos(std::vector<float>& arr, size_t X, size_t Y, Kernel kernel){
     for(size_t xy = 0; xy < XY; ++xy) {
         const float ax = ((float) (xy % X) / (float) X) / 200.f - 0.7463f;
         const float ay = ((float) (xy / X) / (float) Y) / 200.f + 0.1102f;
-        //cout << ax << " " << ay << endl;
-        arr[xy]        = (float) kernel(ax, ay); 
+        arr[xy]        = (float) kernel(ax, ay);
     }
 }
+
 inline __m256 kernel(__m256 ax, __m256 ay)  {
     __m256 mone = _mm256_set1_ps(-1.0f);
     __m256 one  = _mm256_set1_ps(1.0f);
@@ -131,24 +124,7 @@ void mandelbrot_soa(std::vector<float>& arr, size_t X, size_t Y){
         }
     }
 }
-Mat toMat(const std::vector<float>& arr, size_t X, size_t Y){
-    Mat img(X,Y, CV_32F);
 
-    for(int i=0; i<X; ++i)
-        for(int j=0; j<Y; ++j)
-            img.at<float>(i, j) = arr.at(j + i * X);
-
-    return img;
-}
-
-void print(Mat mat, size_t X, size_t Y){
-    for(int i=0; i<X; ++i) {
-        for (int j = 0; j < Y; ++j) {
-            cout << mat.at<float>(i, j) << " ";
-        }
-        cout << endl;
-    }
-}
 #include <chrono>
 using namespace chrono;
 auto t1 = high_resolution_clock::now();
@@ -177,13 +153,6 @@ int main(int argc, char** argv){
    cout << "Time naive    : " << t_naiv << endl;
    cout << "Time soa autov: " << t_soa << endl;
    cout << "Improvement   : " << (t_naiv / t_intr) << " X" << endl;
-   
-   Mat img = toMat(arr1, S, S);
 
-   img /= NUM_IT;
-
-   resize(img, img, Size(1024, 768));
-   imshow("Mandelbrot", img); 
-   waitKey(0);
    return 0;
 }
